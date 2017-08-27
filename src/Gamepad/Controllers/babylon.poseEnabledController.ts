@@ -26,9 +26,9 @@ module BABYLON {
                 return new OculusTouchController(vrGamepad);
             }
             // Windows Mixed Reality controllers 
-            // else if (vrGamepad.id.indexOf('Spatial Control') === 0) {
-            //     //return new WindowsMixedRealityController(vrGamepad);
-            // }
+            else if (vrGamepad.id.indexOf(WindowsMotionController.GAMEPAD_ID_PREFIX) === 0) {
+               return new WindowsMotionController(vrGamepad);
+            }
             // HTC Vive
             else if (vrGamepad.id.toLowerCase().indexOf('openvr') !== -1) {
                 return new ViveController(vrGamepad);
