@@ -9,12 +9,13 @@ module BABYLON {
         public static readonly MODEL_RIGHT_FILENAME = 'right.glb';
         public static readonly GAMEPAD_ID_PREFIX = 'Spatial Controller (Spatial Interaction Source)';
         public static readonly ROOT_NODE_NAME = 'RootNode';
+        // TODO: Why do we need to flip the model around? Art asset or BabylonJS specific?
+        public static readonly ROTATE_OFFSET = [Math.PI, 0, 0]; // x, y, z. 
         public static readonly MAX_TRIES = 1;
 
         private _parentMeshName: string;
         private _loadedMeshInfo: LoadedMeshInfo;
         private readonly _mapping : IControllerMappingInfo = {
-            axes: {'thumbstick': [0, 1], 'surface': [2, 3]},
             // Semantic button names
             buttons: ['thumbstick', 'trigger', 'grip', 'menu', 'trackpad'],
             // A mapping of the semantic name to button node name in the glTF model file,
@@ -26,14 +27,26 @@ module BABYLON {
                 'thumbstick': 'THUMBSTICK_PRESS',
                 'trackpad': 'TOUCHPAD_PRESS'
             },
+            // This mapping is used to translate from the Motion Controller to Babylon semantics
+            buttonObservableNames: {
+                'trigger': 'onTriggerStateChangedObservable',
+                'menu': 'onSecondaryButtonStateChangedObservable',
+                'grip': 'onMainButtonStateChangedObservable',
+                'thumbstick': 'onPadStateChangedObservable',
+                'trackpad': 'onTrackpadChangedObservable'
+            },
+            // TODO: These may need to be used to offset the rotation of the model from the pointing ray
+            // TODO: Remove prefixes from the model data.
+            pointingPoseMeshName: 'CrystalKey_6DOF_Pointing_Pose',
+            holdingPoseMeshName: 'CrystalKey_6DOF_Holding_Pose',
             // A mapping of the semantic name to node name in the glTF model file,
             // that should be transformed by axis value.
-            axisMeshNames: {
-                'thumbstick_0': 'THUMBSTICK_X',
-                'thumbstick_1': 'THUMBSTICK_Y',
-                'surface_2': 'TOUCHPAD_TOUCH_X',
-                'surface_3': 'TOUCHPAD_TOUCH_Y'
-            }
+            axisMeshNames: [
+                'THUMBSTICK_X',
+                'THUMBSTICK_Y',
+                'TOUCHPAD_TOUCH_X',
+                'TOUCHPAD_TOUCH_Y'
+            ]
         };
 
         public onSecondaryTriggerStateChangedObservable = new Observable<ExtendedGamepadButton>();
@@ -92,6 +105,10 @@ module BABYLON {
             let parentMesh = new BABYLON.Mesh(this._parentMeshName, scene);
             let childMesh : AbstractMesh = null;
             meshes.forEach(mesh => {
+                // Disable picking
+                mesh.isPickable = false;
+
+                // Handle root node, attach to the new parentMesh
                 if (mesh.id === WindowsMotionController.ROOT_NODE_NAME) {
                     // There may be a parent mesh to perform the RH to LH matrix transform.
                     if (mesh.parent && mesh.parent.name === "root")
@@ -99,10 +116,20 @@ module BABYLON {
                     
                     childMesh = childMesh || mesh;
                     childMesh.setParent(parentMesh);
+
                 }
             });
 
             this._loadedMeshInfo = this.createMeshInfo(parentMesh);
+            if (!this._loadedMeshInfo) {
+                // TODO: Log warning
+                return;
+            }
+
+            // Apply rotation offsets
+            var rotOffset = WindowsMotionController.ROTATE_OFFSET;
+            childMesh.addRotation(rotOffset[0], rotOffset[1], rotOffset[2]);
+
             this.attachToMesh(this._loadedMeshInfo.rootNode);
         }
 
@@ -148,7 +175,6 @@ module BABYLON {
         }
         
         private createMeshInfo(rootNode: AbstractMesh) : LoadedMeshInfo {
-            var valueChild : AbstractMesh;
             if (!rootNode) {
                 // TODO: Log warning
                 return null;
@@ -156,130 +182,132 @@ module BABYLON {
 
             let loadedMeshInfo = new LoadedMeshInfo();
             loadedMeshInfo.rootNode = rootNode;
-/*
+
             // Button Meshes
             loadedMeshInfo.buttonMeshes = {};
-            for (var i = 0; i < this._mapping.buttons.length; i++) {
-                var meshName = this._mapping.buttonMeshNames[this._mapping.buttons[i]];
+            for (let i = 0; i < this._mapping.buttons.length; i++) {
+                let meshName = this._mapping.buttonMeshNames[this._mapping.buttons[i]];
                 if (!meshName) continue;
 
-                var buttonMesh = rootNode.getObjectByName(meshName);
+                let buttonMesh = rootNode.getChildMeshes(false, (m) => m.name === meshName)[0];
                 if (!buttonMesh) continue;
 
-                valueChild = getImmediateChildByName(buttonMesh, 'VALUE');
-                if (valueChild) {
-                    loadedMeshInfo.buttonMeshes[this._mapping.buttons[i]] = {
-                        index: i,
-                        mesh: valueChild.getObjectByProperty('type', 'Mesh'),
-                        value: valueChild,
-                        pressed: getImmediateChildByName(buttonMesh, 'PRESSED'),
-                        unpressed: getImmediateChildByName(buttonMesh, 'UNPRESSED')
-                    };
+                let buttonMeshInfo = {
+                    index: i,
+                    value: getImmediateChildByName(buttonMesh, 'VALUE'),
+                    pressed: getImmediateChildByName(buttonMesh, 'PRESSED'),
+                    unpressed: getImmediateChildByName(buttonMesh, 'UNPRESSED')
+                };
+                if (buttonMeshInfo.value && buttonMeshInfo.pressed && buttonMeshInfo.unpressed) {
+                    loadedMeshInfo.buttonMeshes[this._mapping.buttons[i]] = buttonMeshInfo;
                 }
             }
 
             // Axis Meshes
             loadedMeshInfo.axisMeshes = {};
-            for (var axisGroupName in this._mapping.axes) {
-                var axisGroup = this._mapping.axes[axisGroupName];
-                var axis : number;
-                for (axis of axisGroup) {
-                    var axisName = axisGroupName + '_' + axis;
+            for (let axis = 0; axis < this._mapping.axisMeshNames.length; axis++) {
+                var axisMeshName = this._mapping.axisMeshNames[axis];
+                if (!axisMeshName) continue;
 
-                    var axisMeshName = this._mapping.axisMeshNames[axisName];
-                    if (!axisMeshName) continue;
+                let axisMesh = rootNode.getChildMeshes(false, (m) => m.name === axisMeshName)[0];
+                if (!axisMesh) continue;
 
-                    var axisMesh = rootNode.getObjectByName(axisMeshName);
-                    if (!axisMesh) continue;
-
-                    valueChild = getImmediateChildByName(axisMesh, 'VALUE');
-                    if (valueChild) {
-                        loadedMeshInfo.axisMeshes[axisName] = {
-                            index: axis,
-                            mesh: valueChild.getObjectByProperty('type', 'Mesh'),
-                            value: valueChild,
-                            min: getImmediateChildByName(axisMesh, 'MIN'),
-                            max: getImmediateChildByName(axisMesh, 'MAX')
-                        };
-                    }
+                let axisMeshInfo = {
+                    index: axis,
+                    value: getImmediateChildByName(axisMesh, 'VALUE'),
+                    min: getImmediateChildByName(axisMesh, 'MIN'),
+                    max: getImmediateChildByName(axisMesh, 'MAX')
+                };
+                if (axisMeshInfo.value && axisMeshInfo.min && axisMeshInfo.max) {
+                    loadedMeshInfo.axisMeshes[axis] = axisMeshInfo;
                 }
             }
-*/
+
+            // Pose offsets
+            loadedMeshInfo.pointingPoseNode = rootNode.getChildMeshes(false, (m) => m.name === this._mapping.pointingPoseMeshName)[0];
+            loadedMeshInfo.holdingPoseNode = rootNode.getChildMeshes(false, (m) => m.name === this._mapping.holdingPoseMeshName)[0];
+
             return loadedMeshInfo;
             
             // This will return null if no mesh exists with the given name.
             function getImmediateChildByName (node, name) : AbstractMesh {
                 return node.getChildMeshes(true, n => n.name == name)[0];
             }
-            function getChildWithMesh (node) : AbstractMesh {
-                return node.getChildMeshes(true, n => n.name == name)[0];
-            }
         }
         
-        protected lerpButtonTransform(node: AbstractMesh, childName: string, value: number) {
-            let minMesh = node.getChildMeshes(true, n => n.name == 'MIN')[0];
-            let maxMesh = node.getChildMeshes(true, n => n.name == 'MAX')[0];
-            if (minMesh && maxMesh) {     
-                let valueMesh = node.getChildMeshes(true, n => n.name == 'VALUE')[0] || node;
-                valueMesh.rotationQuaternion = BABYLON.Quaternion.Slerp(minMesh.rotationQuaternion, maxMesh.rotationQuaternion, value);
+        protected lerpButtonTransform(buttonName: string, value: number) {
+            
+            // If there is no loaded mesh, there is nothing to transform.
+            if (!this._loadedMeshInfo) return;
+
+            var meshInfo = this._loadedMeshInfo.buttonMeshes[buttonName];
+            BABYLON.Quaternion.SlerpToRef(
+                meshInfo.unpressed.rotationQuaternion, 
+                meshInfo.pressed.rotationQuaternion, 
+                value,
+                meshInfo.value.rotationQuaternion);
+            BABYLON.Vector3.LerpToRef(
+                meshInfo.unpressed.position, 
+                meshInfo.pressed.position,
+                value,
+                meshInfo.value.position);
+        }
+        
+        protected lerpAxisTransform(axis, axisValue: number) {
+            
+            // If there is no loaded mesh, there is nothing to transform.
+            if (!this._loadedMeshInfo) return;
+      
+
+            let meshInfo = this._loadedMeshInfo.axisMeshes[axis];
+            if (!meshInfo) return;
+
+            let value = axisValue * 0.5 + 0.5;
+            BABYLON.Quaternion.SlerpToRef(
+                meshInfo.min.rotationQuaternion, 
+                meshInfo.max.rotationQuaternion, 
+                value,
+                meshInfo.value.rotationQuaternion);
+            BABYLON.Vector3.LerpToRef(
+                meshInfo.min.position, 
+                meshInfo.max.position,
+                value,
+                meshInfo.value.position);
+        }
+
+        protected handleButtonChange(buttonIdx: number, state: ExtendedGamepadButton, changes: GamepadButtonChanges) {
+            let buttonName = this._mapping.buttons[buttonIdx];
+            if (!buttonName) return; // TODO: Log warning
+            
+            this.lerpButtonTransform(buttonName, state.value);
+
+            let observable = this[this._mapping.buttonObservableNames[buttonName]];
+            if (observable) {
+                observable.notifyObservers(state);
             }
         }
 
-        /*
-        // This is the old, broken mapping.
-        0) trigger, 
-        1) menu
-        2) grip
-        3) thumb
-        4) touch
-        */
-        protected handleButtonChange(buttonIdx: number, state: ExtendedGamepadButton, changes: GamepadButtonChanges) {
-            let notifyObject = state; //{ state: state, changes: changes };
-            let triggerDirection = this.hand === 'right' ? -1 : 1;
-            console.log('Button Change: ' + buttonIdx);
-            switch (buttonIdx) {
-                case 0: // index trigger
-                    //if (this._loadedMeshInfo.rootNote) {
-                    //    this.lerpButtonTransform(<AbstractMesh>this._loadedMeshInfo.rootNote.getChildren()[0], 'SELECT', notifyObject.value);
-                    //}
-                    this.onTriggerStateChangedObservable.notifyObservers(notifyObject);
-                    return;
-                case 1:
-                    //if (this._loadedMeshInfo.rootNote) {
-                    //    if (notifyObject.pressed) {
-                    //        (<AbstractMesh>(this._loadedMeshInfo.rootNote.getChildren()[1])).position.y = -0.001;
-                    //    }
-                    //    else {
-                    //        (<AbstractMesh>(this._loadedMeshInfo.rootNote.getChildren()[1])).position.y = 0;
-                    //    }
-                    //}
-                    this.onMainButtonStateChangedObservable.notifyObservers(notifyObject);
-                    return;
-                case 2:  // secondary trigger
-                    //if (this._loadedMeshInfo.rootNote) {
-                    //    (<AbstractMesh>(this._loadedMeshInfo.rootNote.getChildren()[4])).position.x = triggerDirection * notifyObject.value * 0.0035;
-                    //}
-                    this.onSecondaryTriggerStateChangedObservable.notifyObservers(notifyObject);
-                    return;
-                case 3:
-                    this.onPadStateChangedObservable.notifyObservers(notifyObject);
-                    return;
-                case 4:
-                    this.onTrackpadChangedObservable.notifyObservers(notifyObject);
-                    return;
+        public update() {
+            super.update();
+
+            if (this.browserGamepad.axes) {
+                for (let axis = 0; axis < this._mapping.axisMeshNames.length; axis++) {
+                    this.lerpAxisTransform(axis, this.browserGamepad.axes[axis]);
+                }
             }
         }
     }
 
     class LoadedMeshInfo {
         public rootNode: AbstractMesh;
+        public pointingPoseNode: AbstractMesh;
+        public holdingPoseNode: AbstractMesh;
         public buttonMeshes: { [id: string] : IButtonMeshInfo; } = {};
-        public axisMeshes: { [id: string] : IAxisMeshInfo; } = {};
+        public axisMeshes: { [id: number] : IAxisMeshInfo; } = {};
     }
 
     interface IMeshInfo {
         index: number;
-        mesh: AbstractMesh;
         value: AbstractMesh;
     }
 
@@ -294,10 +322,12 @@ module BABYLON {
     }
 
     interface IControllerMappingInfo {
-        axes: { [id: string] : number[] };
         buttons: string[];
         buttonMeshNames: { [id: string ] : string };
-        axisMeshNames: { [id: string ] : string };
+        buttonObservableNames: { [id: string ] : string };
+        axisMeshNames: string[];
+        pointingPoseMeshName: string;
+        holdingPoseMeshName: string;
     }
 
     interface IControllerUrl {
